@@ -270,6 +270,12 @@ function analyze(zones, options = {}) {
   const conflictCountByType = { spatial: 0, resource: 0, both: 0 };
   conflicts.forEach((c) => { conflictCountByType[c.conflictType] += 1; });
 
+  // 参与本次分析的区域摘要（按 id 升序）：供「分析对比」核对两次分析的区域集合是否一致，
+  // 也用于旧版结果缺少该字段时从冲突记录回退恢复
+  const zoneSummaries = candidates
+    .map((z) => ({ id: String(z.id), name: z.name, layer: z.layer }))
+    .sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
+
   // 冲突协调集群：区域为节点、冲突为无向边的连通分量（≥2 个区域），含 Tarjan 关键区域
   const clusters = buildClusters(conflicts);
 
@@ -281,6 +287,7 @@ function analyze(zones, options = {}) {
       end: options.end || null,
     },
     zoneCount: candidates.length,
+    zoneSummaries,
     conflictCount: conflicts.length,
     conflictCountByType,
     clusterCount: clusters.length,

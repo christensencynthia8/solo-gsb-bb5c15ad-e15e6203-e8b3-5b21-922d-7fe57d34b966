@@ -56,6 +56,23 @@
         </div>
         <ul id="analysisList" class="analysis-list"></ul>
       </section>
+
+      <section class="card" id="compareCard">
+        <h2>5. 分析对比</h2>
+        <p class="cluster-hint">选择两条已保存分析，按区域对匹配冲突（不依赖冲突编号），对比冲突类型、重叠起止/天数与共享资源的变化。两条分析须基于同一批区域。</p>
+        <div class="row">
+          <label>基线
+            <select id="compareBaseline"></select>
+          </label>
+        </div>
+        <div class="row">
+          <label>对照
+            <select id="compareComparison"></select>
+          </label>
+          <button id="compareBtn" class="primary" type="button">开始对比</button>
+        </div>
+        <p id="compareMsg" class="msg"></p>
+      </section>
     </aside>
 
     <!-- 右侧：地图 + 结果 -->
@@ -83,6 +100,21 @@
           <span id="clusterScope" class="cluster-scope" hidden></span>
         </div>
         <div id="conflictList" class="conflict-list"><em>运行分析后在此展示，按重叠面积降序排列。</em></div>
+      </section>
+
+      <section class="card" id="compareResultCard" hidden>
+        <div class="cluster-head">
+          <h2>分析对比结果 <span id="compareSummary" class="badge"></span></h2>
+        </div>
+        <p id="compareMeta" class="cluster-hint"></p>
+        <div class="compare-tabs" id="compareTabs">
+          <button type="button" class="compare-tab active" data-cat="all">全部 <span class="tab-count" data-count="all">0</span></button>
+          <button type="button" class="compare-tab added" data-cat="added">🆕 新增 <span class="tab-count" data-count="added">0</span></button>
+          <button type="button" class="compare-tab resolved" data-cat="resolved">✅ 已解决 <span class="tab-count" data-count="resolved">0</span></button>
+          <button type="button" class="compare-tab persistent" data-cat="persistent">🔄 持续 <span class="tab-count" data-count="persistent">0</span></button>
+          <button type="button" class="compare-tab changed" data-cat="changed">⚠ 属性变化 <span class="tab-count" data-count="changed">0</span></button>
+        </div>
+        <div id="compareList" class="compare-list"></div>
       </section>
     </section>
   </main>

@@ -1,6 +1,6 @@
 # 临时施工区域冲突分析台
 
-一个 Node.js/Express Web 应用：导入带生效起止时间与资源占用的 GeoJSON 多边形施工区域，基于 [polygon-clipping](https://www.npmjs.com/package/polygon-clipping) 计算**同一时段内真实相交**的区域（空间冲突），并检测**同一时段占用同一资源**的区域（资源冲突）；两者同时满足时合并为一条记录并标注冲突类型、共享资源与重叠时段。结果按重叠面积降序输出，支持按冲突类型筛选，并自动生成可行的错峰/资源调配建议。每次分析后还会生成**冲突协调集群**：以区域为节点、冲突为无向边求连通分量，并用 Tarjan 算法识别移除后会拆分集群的关键区域。支持图层筛选、分析结果保存与 GeoJSON 报告导出。
+一个 Node.js/Express Web 应用：导入带生效起止时间与资源占用的 GeoJSON 多边形施工区域，基于 [polygon-clipping](https://www.npmjs.com/package/polygon-clipping) 计算**同一时段内真实相交**的区域（空间冲突），并检测**同一时段占用同一资源**的区域（资源冲突）；两者同时满足时合并为一条记录并标注冲突类型、共享资源与重叠时段。结果按重叠面积降序输出，支持按冲突类型筛选，并自动生成可行的错峰/资源调配建议。每次分析后还会生成**冲突协调集群**：以区域为节点、冲突为无向边求连通分量，并用 Tarjan 算法识别移除后会拆分集群的关键区域。支持图层筛选、分析结果保存与 GeoJSON 报告导出，并可对任意两条已保存分析按区域对做新增/已解决/持续及属性变化的对比。
 
 ## 功能
 
@@ -10,6 +10,7 @@
 - **共享资源冲突检测**：时间重叠且 `resources` 存在交集即判定资源冲突；与空间冲突同时成立时合并为一条 `both` 记录，避免重复计数
 - **冲突协调集群**：每次分析后，以区域为节点、冲突为无向边（同一对区域即使存在多类型冲突也只产生一条边），按连通分量生成仅含两个及以上区域的集群；用 **Tarjan 割点算法**识别关键区域（移除后集群会分裂）。每个集群返回区域/冲突 ID、冲突类型计数、累计重叠天数与关键区域列表，集群按冲突数降序、最小区域 ID 稳定排序
 - **结果筛选与建议**：按冲突类型（空间 / 资源 / 空间+资源）筛选结果列表；点击集群卡片可联动过滤冲突列表与地图，关键区域在地图上以金色虚线 + 菱形标记独立呈现，可一键恢复全量视图；每处冲突给出"顺延 / 提前 / 工序穿插"建议，涉及共享资源时额外给出"资源错峰 / 分时复用 / 增配资源"建议（含具体调整日期与天数）
+- **分析对比**：选择任意两条已保存分析，服务端**按区域对（zone pair）匹配冲突**（不依赖 `conflict-N` 编号——编号会随冲突增减与面积排序漂移），输出四类结果：**新增**（基线无、对照有）、**已解决**（基线有、对照无）、**持续且属性变化**、**持续且属性未变**；属性变化逐字段标注冲突类型、重叠起止/天数、共享资源（新增/移除的资源名），并保留两侧完整冲突详情。要求两条分析基于**同一区域集合**（参与分析的区域随结果保存为 `zoneSummaries`），新增/删除区域、重新导入（uuid 变化）或筛选区域不同都会以可理解的错误信息拒绝并列出差异区域
 - **图层筛选**：按 `properties.layer` 勾选参与分析的图层，可限定分析时段（重叠期自动按时段裁剪）
 - **地图可视化**：Leaflet 地图展示各区域（按图层着色）与按冲突类型着色的相交区域，点击结果可定位（纯资源冲突无相交几何，不上图）
 - **保存与导出**：分析结果可命名保存（JSON 文件持久化，含集群摘要），一键导出带元数据、集群摘要、冲突类型、共享资源与建议的 GeoJSON 报告
@@ -42,6 +43,7 @@ npm start
    - **点击卡片**：冲突列表仅显示该集群的冲突，地图聚焦集群范围；集群外区域淡出，集群内区域加粗，**关键区域以金色虚线描边 + ◆ 菱形标记**独立呈现
    - **再次点击同一卡片**或点击右上角「**恢复全量视图**」：取消过滤
 5. 在「已保存分析」输入名称后点「**保存当前分析**」，之后可随时「查看」复现（含集群选择视图所需的全部摘要）或「导出」GeoJSON 报告
+6. 在「**分析对比**」分别选择基线与对照两条已保存分析（默认按保存时间自动选择最早/最晚两条），点击「**开始对比**」：结果区以分类页签展示新增 / 已解决 / 持续（可单独筛出属性变化）数量与明细；持续冲突逐条列出冲突类型、重叠起止/天数、共享资源的前后差异，展开可见两侧完整冲突详情。若两条分析的区域集合不同，会在对比面板直接提示差异区域名称，需基于同一批区域重新保存后再对比
 
 ### 导入流程（预检 → 确认 → 写入）
 
@@ -97,7 +99,7 @@ npm test
 | `areaM2` / `areaHectares` / `geometry` | 相交面积与相交几何；纯资源冲突无空间相交，`geometry` 为 `null`、面积为 0 |
 | `suggestions` | 错峰建议列表（含资源错峰/分时复用/增配资源，每条含 `type` 与 `text`） |
 
-汇总字段 `conflictCountByType` 给出三种类型各自的数量；保存的分析与导出的 GeoJSON 报告均完整保留以上字段（导出时纯资源冲突以 `geometry: null` 的 Feature 表示，保证冲突清单不丢失）。
+汇总字段 `conflictCountByType` 给出三种类型各自的数量；保存的分析与导出的 GeoJSON 报告均完整保留以上字段（导出时纯资源冲突以 `geometry: null` 的 Feature 表示，保证冲突清单不丢失）。分析结果还包含 `zoneSummaries`：参与本次分析的全部区域摘要 `{id, name, layer}`（按 id 升序，含无冲突区域），供分析对比核对区域集合。
 
 ## 冲突协调集群输出字段
 
@@ -117,6 +119,39 @@ npm test
 
 导出的 GeoJSON 中：`metadata.clusterCount` 与 `metadata.clusters` 保留完整集群摘要；每个冲突 Feature 的 `properties.clusterId` 标注其所属集群（不属于任何集群时为 `null`）。
 
+## 分析对比输出字段
+
+`POST /api/analyses/compare` 按**区域对**（两侧区域 id 排序后拼接的稳定键，与冲突编号无关）匹配两侧冲突，返回：
+
+| 字段 | 说明 |
+| --- | --- |
+| `baseline` / `comparison` | 两条分析的 `{id, name, savedAt, params, generatedAt}` 摘要 |
+| `zoneCount` | 参与对比的区域数（两条分析区域集合必须一致） |
+| `summary` | `{added, resolved, persistent, persistentChanged, persistentUnchanged, beforeConflictCount, afterConflictCount}` |
+| `added[]` | 新增冲突：`{pairKey, zones, conflict}`（`conflict` 为对照侧完整冲突记录） |
+| `resolved[]` | 已解决冲突：`{pairKey, zones, conflict}`（`conflict` 为基线侧完整冲突记录） |
+| `persistent[]` | 持续冲突：`{pairKey, zones, changed, changes[], before, after, beforeAreaM2, afterAreaM2}` |
+
+`persistent[].changes[]` 逐项给出属性差异，每项含 `field` / `label` 与前后值：
+
+| `field` | 触发条件 | 前后值 |
+| --- | --- | --- |
+| `conflictType` | 冲突类型变化（如工期/资源调整使 `spatial` ↔ `both` ↔ `resource` 转换） | `before` / `after` 为类型代码 |
+| `overlap` | 重叠起止时间或重叠天数变化 | `{start, end, days}` 前后对照 |
+| `sharedResources` | 共享资源集合变化 | `before[]` / `after[]` 全集 + `added[]` / `removed[]` 差异 |
+
+各类条目内部按冲突面积（取两侧较大值）、重叠天数降序排列；持续冲突中有属性变化的排在前面。区域集合一致性依据分析结果中的 `zoneSummaries`（`analyze()` 输出的参与分析全部区域 `{id, name, layer}` 列表，按 id 升序）判定；旧版本保存、不含该字段的结果自动从冲突记录中回退恢复区域集合。
+
+### 对比错误响应
+
+| 场景 | 状态码 | 说明 |
+| --- | --- | --- |
+| 未传 / 传空 `baselineId`、`comparisonId` | 400 | `请选择两条已保存分析…` |
+| 两条 id 相同 | 400 | `请选择两条不同的已保存分析进行对比` |
+| 任一分析不存在（或已删除） | 404 | 指出是基线还是对照、附带其 id |
+| 分析结果数据损坏（无 `conflicts` 列表） | 400 | 指出是哪条分析数据不完整 |
+| 区域集合不同 | 422 | `code: "ZONE_SET_MISMATCH"`，`zonesOnlyInBefore` / `zonesOnlyInAfter` 给出仅单侧存在的区域 id，错误信息中附带区域名称（各列前 5 个） |
+
 ## API 一览
 
 | 方法 | 路径 | 说明 |
@@ -134,6 +169,7 @@ npm test
 | GET | `/api/analyses` | 已保存分析列表（含 `conflictCountByType`、`clusterCount`） |
 | GET | `/api/analyses/:id` | 分析详情 |
 | DELETE | `/api/analyses/:id` | 删除分析 |
+| POST | `/api/analyses/compare` | **分析对比**：body `{baselineId, comparisonId}`；按区域对匹配冲突，返回新增/已解决/持续（含逐字段属性变化）。同一条分析返回 400、分析不存在返回 404、区域集合不同返回 422（错误信息含仅单侧存在的区域） |
 | GET | `/api/analyses/:id/export` | 导出 GeoJSON 报告（附件下载；`metadata.clusters` 含集群摘要，每个 Feature 的 `properties.clusterId` 关联集群） |
 
 ### 预检检查项与分级
@@ -160,16 +196,18 @@ npm test
 ├── server.js            # Express 入口与 API 路由（precheck / commit / import / analyze）
 ├── src/
 │   ├── analysis.js      # 时空/资源冲突检测与错峰建议生成
+│   ├── compare.js       # 分析对比：按区域对匹配 + 新增/已解决/持续/属性变化分类
 │   ├── clusters.js      # 冲突协调集群：无向图连通分量 + Tarjan 割点（关键区域）
 │   ├── quality.js       # 导入质量预检与规范化（环/顶点/自相交/时间/资源，JSONPath 定位）
 │   ├── geo.js           # 局部投影与面积计算
 │   └── store.js         # JSON 文件持久化（区域 / 已保存分析）
-├── public/              # 前端（Leaflet 地图 + 集群卡片 + 分析面板 + 预检结果页）
+├── public/              # 前端（Leaflet 地图 + 集群卡片 + 分析面板 + 对比面板 + 预检结果页）
 │   ├── sample.geojson   # 示例数据（含 resources 字段）
 │   └── sample-issues.geojson # 问题示例（各类错误/警告）
 ├── test/analysis.test.js
 ├── test/clusters.test.js
 ├── test/quality.test.js
+├── test/compare.test.js
 ├── Dockerfile
 └── docker-compose.yml
 ```

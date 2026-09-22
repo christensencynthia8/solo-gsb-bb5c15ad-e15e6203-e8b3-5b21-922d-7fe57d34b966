@@ -10,6 +10,9 @@ const state = {
   typeFilter: 'all',
   lastPrecheck: null,   // 最近一次质量预检结果
   selectedClusterId: null, // 当前选中的冲突协调集群（null = 全量视图）
+  analyses: [],         // 已保存分析列表（对比选择器复用）
+  lastComparison: null, // 最近一次分析对比结果
+  compareCat: 'all',    // 对比结果分类筛选
 };
 
 // 冲突类型展示配置
@@ -629,11 +632,11 @@ function renderConflicts(result) {
 // ---------- 已保存分析 ----------
 async function refreshAnalyses() {
   const { analyses } = await api('/api/analyses');
+  state.analyses = analyses;
   const list = $('analysisList');
   list.innerHTML = '';
   if (!analyses.length) {
     list.innerHTML = '<li><em>暂无已保存分析</em></li>';
-    return;
   }
   for (const a of analyses) {
     const li = document.createElement('li');
@@ -676,6 +679,231 @@ async function refreshAnalyses() {
     btns.append(view, exp, del);
     li.appendChild(btns);
     list.appendChild(li);
+  }
+
+  renderCompareSelectors();
+}
+
+// ---------- 分析对比 ----------
+function analysisOptionLabel(a) {
+  const t = new Date(a.savedAt).toLocaleString('zh-CN');
+  return `${a.name}（${t} · ${a.conflictCount} 处冲突）`;
+}
+
+/** 刷新对比下拉框，尽量保留已选；默认按保存时间把较早的选为基线、较晚的选为对照 */
+function renderCompareSelectors() {
+  const baselineSel = $('compareBaseline');
+  const comparisonSel = $('compareComparison');
+  const prevBase = baselineSel.value;
+  const prevCmp = comparisonSel.value;
+  const analyses = [...state.analyses].sort(
+    (a, b) => Date.parse(a.savedAt) - Date.parse(b.savedAt)
+  );
+
+  for (const sel of [baselineSel, comparisonSel]) {
+    sel.innerHTML = '';
+    if (analyses.length < 2) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = analyses.length ? '还需再保存一条分析' : '暂无已保存分析';
+      sel.appendChild(opt);
+      sel.disabled = true;
+    } else {
+      sel.disabled = false;
+      for (const a of analyses) {
+        const opt = document.createElement('option');
+        opt.value = a.id;
+        opt.textContent = analysisOptionLabel(a);
+        sel.appendChild(opt);
+      }
+    }
+  }
+
+  if (analyses.length >= 2) {
+    baselineSel.value = analyses.some((a) => a.id === prevBase)
+      ? prevBase
+      : analyses[0].id;
+    comparisonSel.value = analyses.some((a) => a.id === prevCmp)
+      ? prevCmp
+      : analyses[analyses.length - 1].id;
+    // 两条恰好相同时，把对照切到另一条
+    if (baselineSel.value === comparisonSel.value) {
+      const other = analyses.find((a) => a.id !== baselineSel.value);
+      if (other) comparisonSel.value = other.id;
+    }
+  }
+  $('compareBtn').disabled = analyses.length < 2;
+}
+
+async function runComparison() {
+  const baselineId = $('compareBaseline').value;
+  const comparisonId = $('compareComparison').value;
+  const msg = $('compareMsg');
+  if (!baselineId || !comparisonId) {
+    showMsg(msg, '请选择两条已保存分析', false);
+    return;
+  }
+  if (baselineId === comparisonId) {
+    showMsg(msg, '基线与对照不能是同一条分析，请重新选择', false);
+    return;
+  }
+  try {
+    const result = await api('/api/analyses/compare', {
+      method: 'POST',
+      body: JSON.stringify({ baselineId, comparisonId }),
+    });
+    state.lastComparison = result;
+    state.compareCat = 'all';
+    msg.textContent = '';
+    msg.className = 'msg';
+    renderComparison(result);
+  } catch (err) {
+    state.lastComparison = null;
+    $('compareResultCard').hidden = true;
+    showMsg(msg, err.message, false);
+  }
+}
+
+const COMPARE_CATS = {
+  added: { label: '新增冲突', cls: 'added' },
+  resolved: { label: '已解决', cls: 'resolved' },
+  persistent: { label: '持续冲突', cls: 'persistent' },
+};
+
+function renderComparison(result) {
+  const card = $('compareResultCard');
+  card.hidden = false;
+  const s = result.summary;
+  $('compareSummary').textContent =
+    `${s.beforeConflictCount} → ${s.afterConflictCount} 处冲突`;
+  $('compareMeta').innerHTML =
+    `基线：<strong>${escapeHtml(result.baseline.name)}</strong>（${fmtDate(result.baseline.savedAt)}）` +
+    ` ➜ 对照：<strong>${escapeHtml(result.comparison.name)}</strong>（${fmtDate(result.comparison.savedAt)}）` +
+    ` · 共 ${result.zoneCount} 个相同区域`;
+
+  const counts = {
+    all: s.added + s.resolved + s.persistent,
+    added: s.added,
+    resolved: s.resolved,
+    persistent: s.persistent,
+    changed: s.persistentChanged,
+  };
+  document.querySelectorAll('#compareTabs .tab-count').forEach((el) => {
+    el.textContent = counts[el.dataset.count];
+  });
+  document.querySelectorAll('#compareTabs .compare-tab').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.cat === state.compareCat);
+  });
+
+  renderComparisonList();
+}
+
+function comparisonEntries(result) {
+  const all = [
+    ...result.added.map((e) => ({ cat: 'added', ...e })),
+    ...result.resolved.map((e) => ({ cat: 'resolved', ...e })),
+    ...result.persistent.map((e) => ({ cat: 'persistent', ...e })),
+  ];
+  if (state.compareCat === 'changed') {
+    return all.filter((e) => e.cat === 'persistent' && e.changed);
+  }
+  return state.compareCat === 'all' ? all : all.filter((e) => e.cat === state.compareCat);
+}
+
+function zonePairHtml(zones) {
+  return (zones || [])
+    .filter(Boolean)
+    .map((z) => `<span class="tag">${escapeHtml(z.name)}${z.layer ? `（${escapeHtml(z.layer)}）` : ''}</span>`)
+    .join(' <span class="pair-x">×</span> ');
+}
+
+function conflictBriefHtml(c) {
+  const typeTag = `<span class="type-badge" style="background:${(CONFLICT_TYPES[c.conflictType] || {}).color || '#777'}">${typeLabel(c.conflictType)}</span>`;
+  const res = (c.sharedResources || []).length
+    ? `共享资源：${c.sharedResources.map((r) => `<span class="tag resource">${escapeHtml(r)}</span>`).join(' ')}<br>`
+    : '';
+  const area = c.geometry ? fmtArea(c.areaM2) : '无空间相交（仅资源冲突）';
+  return `${typeTag}<br>${res}重叠时段：${fmtDate(c.overlapStart)} ~ ${fmtDate(c.overlapEnd)}（${c.overlapDays ?? '-'} 天）<br>重叠面积：${area}`;
+}
+
+function changeRowsHtml(changes) {
+  return changes.map((ch) => {
+    if (ch.field === 'conflictType') {
+      return `<li>冲突类型：<span class="cmp-before">${escapeHtml(typeLabel(ch.before))}</span> → <span class="cmp-after">${escapeHtml(typeLabel(ch.after))}</span></li>`;
+    }
+    if (ch.field === 'overlap') {
+      const b = ch.before;
+      const a = ch.after;
+      return `<li>重叠起止/天数：` +
+        `<span class="cmp-before">${fmtDate(b.start)} ~ ${fmtDate(b.end)}（${b.days ?? '-'} 天）</span> → ` +
+        `<span class="cmp-after">${fmtDate(a.start)} ~ ${fmtDate(a.end)}（${a.days ?? '-'} 天）</span></li>`;
+    }
+    if (ch.field === 'sharedResources') {
+      const added = ch.added.length ? `新增 ${ch.added.map((r) => `<span class="tag resource cmp-add">${escapeHtml(r)}</span>`).join(' ')}` : '';
+      const removed = ch.removed.length ? `移除 ${ch.removed.map((r) => `<span class="tag resource cmp-rm">${escapeHtml(r)}</span>`).join(' ')}` : '';
+      return `<li>共享资源变化：${added}${added && removed ? '；' : ''}${removed}</li>`;
+    }
+    return '';
+  }).join('');
+}
+
+function renderComparisonList() {
+  const result = state.lastComparison;
+  const box = $('compareList');
+  box.innerHTML = '';
+  if (!result) return;
+
+  const entries = comparisonEntries(result);
+  if (!entries.length) {
+    const emptyText = {
+      added: '该分类下没有新增冲突。',
+      resolved: '该分类下没有已解决冲突。',
+      persistent: '该分类下没有持续冲突。',
+      changed: '持续冲突均无属性变化。',
+      all: '两次分析完全一致，没有任何差异。',
+    }[state.compareCat];
+    box.innerHTML = `<em>${emptyText}</em>`;
+    return;
+  }
+
+  for (const e of entries) {
+    const item = document.createElement('div');
+    item.className = `compare-item cmp-${e.cat}`;
+    const cat = COMPARE_CATS[e.cat];
+    let body = '';
+
+    if (e.cat === 'added') {
+      body = `
+        <div class="cmp-zones">${zonePairHtml(e.zones)}</div>
+        <div class="cmp-detail"><span class="cmp-side-label cmp-after">新增（仅对照分析存在）</span><br>${conflictBriefHtml(e.conflict)}</div>`;
+    } else if (e.cat === 'resolved') {
+      body = `
+        <div class="cmp-zones">${zonePairHtml(e.zones)}</div>
+        <div class="cmp-detail"><span class="cmp-side-label cmp-before">已解决（仅基线分析存在）</span><br>${conflictBriefHtml(e.conflict)}</div>`;
+    } else {
+      const changeBadge = e.changed
+        ? '<span class="cmp-status changed">⚠ 属性变化</span>'
+        : '<span class="cmp-status unchanged">属性未变</span>';
+      const changes = e.changed
+        ? `<ul class="cmp-changes">${changeRowsHtml(e.changes)}</ul>`
+        : '';
+      const areaLine = e.beforeAreaM2 !== e.afterAreaM2
+        ? `<li class="cmp-area-note">重叠面积：${fmtArea(e.beforeAreaM2)} → ${fmtArea(e.afterAreaM2)}</li>`
+        : '';
+      body = `
+        <div class="cmp-zones">${zonePairHtml(e.zones)} ${changeBadge}</div>
+        ${changes}${areaLine}
+        <details>
+          <summary>查看两侧冲突详情</summary>
+          <div class="cmp-sides">
+            <div class="cmp-side"><div class="cmp-side-label cmp-before">基线</div>${conflictBriefHtml(e.before)}</div>
+            <div class="cmp-side"><div class="cmp-side-label cmp-after">对照</div>${conflictBriefHtml(e.after)}</div>
+          </div>
+        </details>`;
+    }
+
+    item.innerHTML = `<h3><span class="cmp-cat-tag cmp-tag-${e.cat}">${cat.label}</span></h3>${body}`;
+    box.appendChild(item);
   }
 }
 
@@ -765,6 +993,14 @@ $('saveAnalysisBtn').onclick = async () => {
     alert(`保存失败：${err.message}`);
   }
 };
+
+$('compareBtn').onclick = runComparison;
+document.querySelectorAll('#compareTabs .compare-tab').forEach((btn) => {
+  btn.onclick = () => {
+    state.compareCat = btn.dataset.cat;
+    if (state.lastComparison) renderComparison(state.lastComparison);
+  };
+});
 
 // ---------- 启动 ----------
 (async function init() {
