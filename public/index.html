@@ -55,12 +55,40 @@
           <button id="saveAnalysisBtn" type="button">保存当前分析</button>
         </div>
         <ul id="analysisList" class="analysis-list"></ul>
+        <div class="compare-picker">
+          <h3>分析对比</h3>
+          <label for="compareBase">基准（旧）</label>
+          <select id="compareBase"></select>
+          <label for="compareTarget">对比（新）</label>
+          <select id="compareTarget"></select>
+          <button id="compareBtn" class="primary" type="button">开始对比</button>
+          <p id="compareMsg" class="msg"></p>
+        </div>
       </section>
     </aside>
 
     <!-- 右侧：地图 + 结果 -->
     <section id="content">
       <div id="map"></div>
+      <section class="card" id="compareCard" hidden>
+        <div class="cluster-head">
+          <h2>分析对比 <span id="compareSummary" class="badge"></span></h2>
+          <button id="closeCompareBtn" class="small" type="button">关闭对比</button>
+        </div>
+        <p class="cluster-hint" id="compareMeta"></p>
+        <div class="row">
+          <label>分类筛选
+            <select id="compareFilter">
+              <option value="all">全部</option>
+              <option value="added">新增</option>
+              <option value="resolved">已解决</option>
+              <option value="ongoing">持续</option>
+              <option value="changed">属性变化</option>
+            </select>
+          </label>
+        </div>
+        <div id="compareList" class="conflict-list"></div>
+      </section>
       <section class="card" id="clustersCard">
         <div class="cluster-head">
           <h2>冲突协调集群 <span id="clusterSummary" class="badge">未运行</span></h2>

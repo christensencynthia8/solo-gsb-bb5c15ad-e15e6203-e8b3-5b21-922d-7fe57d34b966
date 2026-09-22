@@ -10,6 +10,8 @@ const state = {
   typeFilter: 'all',
   lastPrecheck: null,   // 最近一次质量预检结果
   selectedClusterId: null, // 当前选中的冲突协调集群（null = 全量视图）
+  compareResult: null,  // 最近一次分析对比结果
+  compareFilter: 'all', // 对比结果分类筛选
 };
 
 // 冲突类型展示配置
@@ -26,6 +28,14 @@ function typeLabel(t) {
 const CRITICAL_STYLE = { color: '#f59f00', weight: 3.5, dashArray: '8 4', fillColor: '#f59f00', fillOpacity: 0.22 };
 const DIMMED_STYLE = { color: '#bbb', weight: 1, fillColor: '#bbb', fillOpacity: 0.05 };
 
+// 对比结果分类展示配置（新增 / 已解决 / 持续 / 属性变化）
+const CMP_CATEGORIES = {
+  added: { label: '新增', color: '#d0000b' },
+  resolved: { label: '已解决', color: '#2f9e44' },
+  ongoing: { label: '持续', color: '#1971c2' },
+  changed: { label: '属性变化', color: '#e8590c' },
+};
+
 // ---------- 地图 ----------
 const map = L.map('map').setView([31.23, 121.47], 13);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -36,6 +46,7 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 const zonesLayer = L.layerGroup().addTo(map);
 const conflictsLayer = L.layerGroup().addTo(map);
 const criticalMarkersLayer = L.layerGroup().addTo(map);
+const compareLayer = L.layerGroup().addTo(map); // 对比结果几何（按分类着色）
 const zoneGeoLayers = new Map(); // zoneId -> Leaflet 图层（便于按集群切换样式）
 
 const LAYER_COLORS = ['#2b8a3e', '#1971c2', '#e8590c', '#9c36b5', '#c2255c', '#0b7285', '#5f3dc4', '#a61e4d'];
@@ -369,6 +380,7 @@ async function runAnalysis() {
   };
   try {
     const result = await api('/api/analyze', { method: 'POST', body: JSON.stringify(body) });
+    clearCompare(); // 新分析上下文下旧对比结果失效
     state.lastResult = result;
     resetClusterView();
     renderConflicts(result);
@@ -430,6 +442,7 @@ function renderClusters(result) {
 }
 
 function selectCluster(id) {
+  clearCompare(); // 回到单次分析的集群视图时退出对比上下文
   state.selectedClusterId = id;
   renderClusters(state.lastResult);
   renderConflicts(state.lastResult);
@@ -629,6 +642,7 @@ function renderConflicts(result) {
 // ---------- 已保存分析 ----------
 async function refreshAnalyses() {
   const { analyses } = await api('/api/analyses');
+  syncCompareOptions(analyses);
   const list = $('analysisList');
   list.innerHTML = '';
   if (!analyses.length) {
@@ -655,6 +669,7 @@ async function refreshAnalyses() {
     view.textContent = '查看';
     view.onclick = async () => {
       const record = await api(`/api/analyses/${a.id}`);
+      clearCompare(); // 查看单条分析时退出对比上下文
       state.lastResult = record.result;
       resetClusterView();
       renderConflicts(record.result);
@@ -670,6 +685,7 @@ async function refreshAnalyses() {
     del.textContent = '删除';
     del.onclick = async () => {
       await api(`/api/analyses/${a.id}`, { method: 'DELETE' });
+      clearCompare(true); // 被删分析可能正参与对比，关闭对比并恢复单次分析视图
       await refreshAnalyses();
     };
 
@@ -677,6 +693,216 @@ async function refreshAnalyses() {
     li.appendChild(btns);
     list.appendChild(li);
   }
+}
+
+// ---------- 分析对比 ----------
+
+/** 同步对比下拉框选项；尽量保留原选择，默认基准=最早一条、对比=最新一条 */
+function syncCompareOptions(analyses) {
+  const base = $('compareBase');
+  const target = $('compareTarget');
+  const prevBase = base.value;
+  const prevTarget = target.value;
+  for (const sel of [base, target]) {
+    sel.innerHTML = '';
+    for (const a of analyses) {
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = `${a.name}（${new Date(a.savedAt).toLocaleString('zh-CN')}）`;
+      sel.appendChild(opt);
+    }
+  }
+  base.value = analyses.some((a) => a.id === prevBase)
+    ? prevBase
+    : (analyses[0] ? analyses[0].id : '');
+  target.value = analyses.some((a) => a.id === prevTarget)
+    ? prevTarget
+    : (analyses[analyses.length - 1] ? analyses[analyses.length - 1].id : '');
+  $('compareBtn').disabled = analyses.length < 2;
+}
+
+/**
+ * 退出对比上下文：清空对比图层与卡片。
+ * restore=true 且当前有单次分析结果时，恢复其在地图上的呈现。
+ */
+function clearCompare(restore = false) {
+  const had = state.compareResult !== null;
+  state.compareResult = null;
+  compareLayer.clearLayers();
+  $('compareCard').hidden = true;
+  const msg = $('compareMsg');
+  msg.textContent = '';
+  msg.className = 'msg';
+  if (restore && had && state.lastResult) renderConflicts(state.lastResult);
+}
+
+async function runCompare() {
+  const baseId = $('compareBase').value;
+  const targetId = $('compareTarget').value;
+  if (!baseId || !targetId) {
+    showMsg($('compareMsg'), '请先保存至少两条分析，再选择进行对比', false);
+    return;
+  }
+  if (baseId === targetId) {
+    showMsg($('compareMsg'), '基准与对比不能是同一条分析，请选择两条不同的分析', false);
+    return;
+  }
+  try {
+    const result = await api('/api/analyses/compare', {
+      method: 'POST',
+      body: JSON.stringify({ baseId, targetId }),
+    });
+    state.compareFilter = 'all';
+    $('compareFilter').value = 'all';
+    renderCompare(result);
+    const s = result.summary;
+    showMsg($('compareMsg'),
+      `对比完成：新增 ${s.added} · 已解决 ${s.resolved} · 持续 ${s.ongoing} · 属性变化 ${s.changed}`,
+      true);
+    $('compareCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (err) {
+    showMsg($('compareMsg'), err.message, false);
+  }
+}
+
+/** 单条快照的一行式描述（对比详情用） */
+function snapshotLine(snap) {
+  const res = snap.sharedResources.length ? snap.sharedResources.join('、') : '无';
+  const area = snap.geometry ? fmtArea(snap.areaM2) : '无空间相交';
+  return `${typeLabel(snap.conflictType)} · ${fmtDate(snap.overlapStart)} ~ ${fmtDate(snap.overlapEnd)}` +
+    `（${snap.overlapDays} 天）· 共享资源 ${res} · ${area}`;
+}
+
+/** 字段级变化的可读描述 */
+function changeLine(ch) {
+  if (ch.field === 'conflictType') {
+    return `冲突类型：${typeLabel(ch.from)} → ${typeLabel(ch.to)}`;
+  }
+  if (ch.field === 'overlap') {
+    return `重叠时段：${fmtDate(ch.from.start)} ~ ${fmtDate(ch.from.end)}（${ch.from.days} 天）→ ` +
+      `${fmtDate(ch.to.start)} ~ ${fmtDate(ch.to.end)}（${ch.to.days} 天）`;
+  }
+  if (ch.field === 'sharedResources') {
+    const parts = [];
+    if (ch.added.length) parts.push(`新增「${ch.added.join('」「')}」`);
+    if (ch.removed.length) parts.push(`移除「${ch.removed.join('」「')}」`);
+    return `共享资源：${parts.join('，')}`;
+  }
+  return ch.field;
+}
+
+function renderCompare(result) {
+  state.compareResult = result;
+  $('compareCard').hidden = false;
+  const s = result.summary;
+  $('compareSummary').textContent =
+    `新增 ${s.added} · 已解决 ${s.resolved} · 持续 ${s.ongoing} · 属性变化 ${s.changed}`;
+  $('compareMeta').innerHTML =
+    `基准（旧）：<strong>${escapeHtml(result.base.name)}</strong>（${s.baseConflicts} 处冲突）→ ` +
+    `对比（新）：<strong>${escapeHtml(result.target.name)}</strong>（${s.targetConflicts} 处冲突）；` +
+    `按区域对匹配 ${s.matched} 对。` +
+    (result.zoneSets.warning ? `<br><span class="compare-warn">⚠ ${escapeHtml(result.zoneSets.warning)}</span>` : '');
+
+  // 地图：对比几何取代单次分析冲突几何（关闭对比时恢复）
+  conflictsLayer.clearLayers();
+  compareLayer.clearLayers();
+
+  const entries = [
+    ...result.added.map((e) => ({ cat: 'added', e })),
+    ...result.resolved.map((e) => ({ cat: 'resolved', e })),
+    ...result.changed.map((e) => ({ cat: 'changed', e })),
+    ...result.ongoing.map((e) => ({ cat: 'ongoing', e })),
+  ];
+
+  // 全部分类的几何都上图（按分类着色；已解决用虚线表示"曾经的"冲突），筛选只影响列表
+  const geos = new Map(); // entry -> Leaflet 图层（点击列表定位用）
+  for (const { cat, e } of entries) {
+    const geometry = (e.after && e.after.geometry) || (e.before && e.before.geometry);
+    if (!geometry) continue; // 纯资源冲突无空间相交，不上图
+    const info = CMP_CATEGORIES[cat];
+    const geo = L.geoJSON(
+      { type: 'Feature', geometry },
+      {
+        style: {
+          color: info.color, weight: 2, fillColor: info.color, fillOpacity: 0.4,
+          dashArray: cat === 'resolved' ? '6 4' : null,
+        },
+      }
+    );
+    const names = e.zones.map((z) => z.name).join(' ∩ ');
+    const snap = e.after || e.before;
+    geo.bindPopup(
+      `<b>[${info.label}] ${escapeHtml(names)}</b><br>` +
+      `类型：${typeLabel(snap.conflictType)}<br>` +
+      `重叠期：${fmtDate(snap.overlapStart)} ~ ${fmtDate(snap.overlapEnd)}（${snap.overlapDays} 天）` +
+      (snap.sharedResources.length ? `<br>共享资源：${snap.sharedResources.map(escapeHtml).join('、')}` : '')
+    );
+    geo.addTo(compareLayer);
+    geos.set(e, geo);
+  }
+
+  const list = $('compareList');
+  list.innerHTML = '';
+  if (!entries.length) {
+    list.innerHTML = '<em>两条分析的冲突清单一致（或均为空），没有差异。</em>';
+    return;
+  }
+  const visible = entries.filter((x) => state.compareFilter === 'all' || x.cat === state.compareFilter);
+  if (!visible.length) {
+    list.innerHTML = '<em>当前分类下没有条目，请切换分类筛选。</em>';
+    return;
+  }
+  for (const { cat, e } of visible) {
+    list.appendChild(buildCompareItem(cat, e, geos.get(e)));
+  }
+}
+
+function buildCompareItem(cat, e, geo) {
+  const info = CMP_CATEGORIES[cat];
+  const snap = e.after || e.before; // 展示主快照：新增/持续/变化取新，已解决取旧
+  const item = document.createElement('div');
+  item.className = 'conflict-item compare-item';
+  item.style.borderLeftColor = info.color;
+
+  const names = e.zones.map((z) => escapeHtml(z.name)).join(' ∩ ');
+  const typeLine = e.before && e.after && e.before.conflictType !== e.after.conflictType
+    ? `${typeLabel(e.before.conflictType)} → ${typeLabel(e.after.conflictType)}`
+    : typeLabel(snap.conflictType);
+  const areaLine = snap.geometry ? `重叠面积 ${fmtArea(snap.areaM2)}` : '无空间相交（仅资源冲突）';
+  const resLine = snap.sharedResources.length
+    ? `共享资源：${snap.sharedResources.map((r) => `<span class="tag resource">${escapeHtml(r)}</span>`).join(' ')}`
+    : '共享资源：无';
+  const changesHtml = e.changes.length
+    ? `<ul class="cmp-changes">${e.changes.map((ch) => `<li>${escapeHtml(changeLine(ch))}</li>`).join('')}</ul>`
+    : '';
+
+  item.innerHTML = `
+    <h3>
+      <span class="type-badge" style="background:${info.color}">${info.label}</span>
+      ${names}
+    </h3>
+    <div class="stats">
+      类型：${typeLine} · ${areaLine}<br>
+      重叠时段：${fmtDate(snap.overlapStart)} ~ ${fmtDate(snap.overlapEnd)}（${snap.overlapDays} 天）<br>
+      ${resLine}
+      ${changesHtml}
+    </div>
+    <details>
+      <summary>对比详情</summary>
+      <div class="cmp-detail">
+        <div><strong>基准（旧）</strong>：${e.before ? escapeHtml(snapshotLine(e.before)) : '无此冲突'}</div>
+        <div><strong>对比（新）</strong>：${e.after ? escapeHtml(snapshotLine(e.after)) : '无此冲突'}</div>
+      </div>
+    </details>`;
+  if (geo) {
+    item.onclick = () => {
+      map.fitBounds(geo.getBounds().pad(0.3));
+      geo.openPopup();
+    };
+  } else {
+    item.classList.add('no-geometry');
+  }
+  return item;
 }
 
 // ---------- 事件绑定 ----------
@@ -721,6 +947,7 @@ $('clearBtn').onclick = async () => {
   state.selectedLayers.clear();
   conflictsLayer.clearLayers();
   criticalMarkersLayer.clearLayers();
+  clearCompare();
   state.lastResult = null;
   state.selectedClusterId = null;
   $('conflictList').innerHTML = '<em>运行分析后在此展示，按重叠面积降序排列。</em>';
@@ -742,8 +969,19 @@ $('resetClusterBtn').onclick = () => {
 
 $('typeFilter').onchange = (e) => {
   state.typeFilter = e.target.value;
+  clearCompare(); // 切换单次分析筛选时退出对比上下文
   if (state.lastResult) renderConflicts(state.lastResult);
 };
+
+// ---------- 分析对比事件 ----------
+$('compareBtn').onclick = runCompare;
+
+$('compareFilter').onchange = (e) => {
+  state.compareFilter = e.target.value;
+  if (state.compareResult) renderCompare(state.compareResult);
+};
+
+$('closeCompareBtn').onclick = () => clearCompare(true);
 
 $('saveAnalysisBtn').onclick = async () => {
   if (!state.lastResult) {

@@ -226,6 +226,36 @@ button.small { padding: 2px 8px; font-size: 12px; }
   border: 1px solid #b6d4ef;
 }
 
+/* ---------- 分析对比 ---------- */
+.compare-picker {
+  border-top: 1px dashed #dbe3ec;
+  margin-top: 10px;
+  padding-top: 10px;
+}
+.compare-picker h3 { margin: 0 0 6px; font-size: 13px; color: #1f3b57; }
+.compare-picker label { display: block; font-size: 12px; color: #555; margin: 6px 0 2px; }
+.compare-picker select { width: 100%; }
+.compare-picker button { width: 100%; margin-top: 8px; }
+.compare-picker button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.compare-warn { color: #a05a00; }
+
+.compare-item h3 { font-size: 13.5px; }
+.cmp-changes { list-style: none; margin: 6px 0 0; padding: 0; font-size: 12.5px; }
+.cmp-changes li { padding: 2px 0 2px 16px; position: relative; }
+.cmp-changes li::before { content: '↳'; position: absolute; left: 0; color: #e8590c; }
+.compare-item details { margin-top: 6px; font-size: 12.5px; }
+.compare-item details summary { cursor: pointer; color: #1971c2; }
+.cmp-detail {
+  margin-top: 6px;
+  background: #f7f9fb;
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 /* 关键区域地图菱形标记 */
 .critical-marker {
   color: #f59f00;

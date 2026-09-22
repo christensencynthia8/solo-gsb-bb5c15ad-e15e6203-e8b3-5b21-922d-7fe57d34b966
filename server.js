@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const express = require('express');
 const { analyze, normalizeZone } = require('./src/analysis');
 const { precheck, extractFeatures } = require('./src/quality');
+const { compareAnalyses } = require('./src/compare');
 const store = require('./src/store');
 
 const app = express();
@@ -173,6 +174,29 @@ app.get('/api/analyses/:id', (req, res) => {
 app.delete('/api/analyses/:id', (req, res) => {
   const removed = store.deleteAnalysis(req.params.id);
   res.status(removed ? 204 : 404).end();
+});
+
+// ---- 分析对比 ----
+
+// 对比两条已保存分析：body { baseId, targetId }
+// 按区域对（不依赖冲突编号）匹配冲突，输出新增 / 已解决 / 持续 / 属性变化
+app.post('/api/analyses/compare', (req, res) => {
+  const { baseId, targetId } = req.body || {};
+  if (!baseId || !targetId) {
+    return res.status(400).json({ error: '请提供 baseId 与 targetId（两条已保存分析的 ID）' });
+  }
+  if (baseId === targetId) {
+    return res.status(400).json({ error: '基准与对比不能是同一条分析，请选择两条不同的分析' });
+  }
+  const base = store.getAnalysis(baseId);
+  const target = store.getAnalysis(targetId);
+  if (!base) return res.status(404).json({ error: `基准分析不存在（${baseId}），可能已被删除` });
+  if (!target) return res.status(404).json({ error: `对比分析不存在（${targetId}），可能已被删除` });
+  try {
+    res.json(compareAnalyses(base, target));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
 });
 
 // 导出 GeoJSON 报告（相交区域 + 冲突类型 + 共享资源 + 建议）
